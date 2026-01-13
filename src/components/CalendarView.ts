@@ -4,8 +4,8 @@ import timeGridPlugin from '@fullcalendar/timegrid';
 import multiMonthPlugin from '@fullcalendar/multimonth';
 import listPlugin from '@fullcalendar/list';
 import interactionPlugin from '@fullcalendar/interaction';
-import { showMessage, confirm, openTab, Menu, Dialog } from "siyuan";
-import { refreshSql, getBlockByID, sql, updateBlock, getBlockKramdown, updateBlockReminderBookmark, openBlock, readProjectData, readReminderData, writeReminderData } from "../api";
+import { showMessage, confirm, openTab, Menu, Dialog, getFrontend, openMobileFileById } from "siyuan";
+import { refreshSql, getBlockByID, sql, updateBlock, getBlockKramdown, updateBlockReminderBookmark, readProjectData, readReminderData, writeReminderData, createDocWithMd, renderSprig } from "../api";
 import { getLocalDateString, getLocalDateTime, getLocalDateTimeString, compareDateStrings, getLogicalDateString, getRelativeDateString } from "../utils/dateUtils";
 import { QuickReminderDialog } from "./QuickReminderDialog";
 import { CategoryManager, Category } from "../utils/categoryManager";
@@ -45,6 +45,8 @@ export class CalendarView {
     private tooltipShowTimeout: number | null = null; // 添加提示框显示延迟控制
     private lastClickTime: number = 0; // 添加双击检测
     private clickTimeout: number | null = null; // 添加单击延迟超时
+    private lastEventClickTime: number = 0; // 日程双击检测
+    private eventClickTimeout: number | null = null; // 日程单击延迟超时
     private refreshTimeout: number | null = null; // 添加刷新防抖超时
     private currentCompletionFilter: string = 'all'; // 当前完成状态过滤
 
@@ -731,6 +733,8 @@ export class CalendarView {
             selectMirror: true,
             selectOverlap: true,
             eventResizableFromStart: true, // 允许从事件顶部拖动调整开始时间
+            eventStartEditable: true, // 允许拖动事件开始时间
+            eventDurationEditable: true, // 允许调整事件持续时间
             locale: window.siyuan.config.lang.toLowerCase().replace('_', '-'),
             scrollTime: dayStartTime, // 日历视图初始滚动位置
             firstDay: weekStartDay, // 使用用户设置的周开始日
@@ -2564,6 +2568,28 @@ export class CalendarView {
     }
 
     private async handleEventClick(info) {
+        const currentTime = Date.now();
+        const timeDiff = currentTime - this.lastEventClickTime;
+
+        if (this.eventClickTimeout) {
+            clearTimeout(this.eventClickTimeout);
+            this.eventClickTimeout = null;
+        }
+
+        if (timeDiff < 350) {
+            this.lastEventClickTime = 0;
+            await this.handleEventDoubleClick(info);
+        } else {
+            this.lastEventClickTime = currentTime;
+            this.eventClickTimeout = window.setTimeout(async () => {
+                this.lastEventClickTime = 0;
+                this.eventClickTimeout = null;
+                await this.handleEventSingleClick(info);
+            }, 350);
+        }
+    }
+
+    private async handleEventSingleClick(info) {
         const reminder = info.event.extendedProps;
         const blockId = reminder.blockId || info.event.id; // 兼容旧数据格式
 
@@ -2578,7 +2604,7 @@ export class CalendarView {
         }
 
         try {
-            openBlock(blockId);
+            await this.openBlockInRightSplit(blockId);
         } catch (error) {
             console.error('打开笔记失败:', error);
 
@@ -2595,6 +2621,48 @@ export class CalendarView {
                 }
             );
         }
+    }
+
+    private async handleEventDoubleClick(info) {
+        const reminder = info.event.extendedProps;
+
+        if (reminder.isSubscribed) {
+            showMessage(t("subscribedTaskReadOnly") || "订阅任务（只读）");
+            return;
+        }
+
+        if (reminder.blockId) {
+            await this.handleEventSingleClick(info);
+            return;
+        }
+
+        await this.createDocumentAndBind(info.event);
+    }
+
+    private async openBlockInRightSplit(blockId: string) {
+        const block = await getBlockByID(blockId);
+        if (!block) {
+            throw new Error('块不存在');
+        }
+
+        const isMobile = getFrontend().endsWith('mobile');
+        if (isMobile) {
+            openMobileFileById(window.siyuan.ws.app, blockId);
+            return;
+        }
+
+        const isDoc = block.type === 'd';
+        openTab({
+            app: window.siyuan.ws.app,
+            doc: {
+                id: blockId,
+                action: isDoc ? ["cb-get-focus", "cb-get-scroll"] : ["cb-get-focus", "cb-get-context", "cb-get-hl"]
+            },
+            position: "right",
+            keepCursor: false,
+            removeCurrentTab: false,
+            openNewTab: true
+        });
     }
 
     private async handleEventDrop(info) {
@@ -3074,6 +3142,7 @@ export class CalendarView {
                 ...instanceModification
             });
 
+            this.applyEventTimeToExtendedProps(info.event, newStartDate, newEndDate);
             showMessage(t("instanceTimeUpdated"));
             window.dispatchEvent(new CustomEvent('reminderUpdated', { detail: { source: 'calendar' } }));
 
@@ -3209,6 +3278,7 @@ export class CalendarView {
 
                 await saveReminders(this.plugin, reminderData);
 
+                this.applyEventTimeToExtendedProps(info.event, newStartDate, newEndDate);
                 showMessage(t("eventTimeUpdated"));
             } else {
                 throw new Error('提醒数据不存在');
@@ -3235,6 +3305,52 @@ export class CalendarView {
         } catch (error) {
             console.error('检查通知重置条件失败:', error);
             return false;
+        }
+    }
+
+    private applyEventTimeToExtendedProps(calendarEvent: any, startDate: Date, endDate?: Date) {
+        try {
+            if (!calendarEvent || !startDate) {
+                return;
+            }
+
+            const { dateStr: startDateStr, timeStr: startTimeStr } = getLocalDateTime(startDate);
+            calendarEvent.setExtendedProp('date', startDateStr);
+
+            if (calendarEvent.allDay) {
+                calendarEvent.setExtendedProp('time', null);
+                calendarEvent.setExtendedProp('endTime', null);
+
+                if (endDate) {
+                    const adjustedEnd = new Date(endDate);
+                    adjustedEnd.setDate(adjustedEnd.getDate() - 1);
+                    const { dateStr: endDateStr } = getLocalDateTime(adjustedEnd);
+                    if (endDateStr !== startDateStr) {
+                        calendarEvent.setExtendedProp('endDate', endDateStr);
+                    } else {
+                        calendarEvent.setExtendedProp('endDate', null);
+                    }
+                } else {
+                    calendarEvent.setExtendedProp('endDate', null);
+                }
+            } else {
+                calendarEvent.setExtendedProp('time', startTimeStr || null);
+
+                if (endDate) {
+                    const { dateStr: endDateStr, timeStr: endTimeStr } = getLocalDateTime(endDate);
+                    if (endDateStr !== startDateStr) {
+                        calendarEvent.setExtendedProp('endDate', endDateStr);
+                    } else {
+                        calendarEvent.setExtendedProp('endDate', null);
+                    }
+                    calendarEvent.setExtendedProp('endTime', endTimeStr || null);
+                } else {
+                    calendarEvent.setExtendedProp('endDate', null);
+                    calendarEvent.setExtendedProp('endTime', null);
+                }
+            }
+        } catch (error) {
+            console.warn('更新事件扩展属性失败:', error);
         }
     }
 
@@ -3723,40 +3839,54 @@ export class CalendarView {
         }
     }
 
-    private createQuickReminder(info) {
-        // 双击日期，创建快速提醒
-        const clickedDate = info.dateStr;
+    private async createQuickReminder(info) {
+        const clickedDate = info.date ? getLocalDateTime(info.date).dateStr : info.dateStr;
+        await this.createReminderForDate(clickedDate);
+    }
 
-        // 获取点击的时间（如果是时间视图且不是all day区域）
-        let clickedTime = null;
-        if (info.date && this.calendar.view.type !== 'dayGridMonth') {
-            // 在周视图或日视图中，检查是否点击在all day区域
-            // 通过检查点击的时间是否为整点且分钟为0来判断是否在all day区域
-            // 或者通过检查info.allDay属性（如果存在）
-            const isAllDayClick = info.allDay ||
-                (info.date.getHours() === 0 && info.date.getMinutes() === 0) ||
-                // 检查点击位置是否在all day区域（通过DOM元素类名判断）
-                this.isClickInAllDayArea(info.jsEvent);
+    private async createReminderForDate(clickedDate: string) {
+        try {
+            const reminderData = await readReminderData();
+            const reminderId = `quick_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            const defaultProjectId = (!this.currentProjectFilter.has('all') && !this.currentProjectFilter.has('none') && this.currentProjectFilter.size === 1)
+                ? Array.from(this.currentProjectFilter)[0]
+                : undefined;
+            const defaultCategoryId = (!this.currentCategoryFilter.has('all') && !this.currentCategoryFilter.has('none') && this.currentCategoryFilter.size === 1)
+                ? Array.from(this.currentCategoryFilter)[0]
+                : undefined;
 
-            if (!isAllDayClick) {
-                // 只有在非all day区域点击时才设置具体时间
-                const hours = info.date.getHours();
-                const minutes = info.date.getMinutes();
-                clickedTime = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+            const reminder: any = {
+                id: reminderId,
+                blockId: null,
+                docId: null,
+                title: t("newTask") || "新建任务",
+                date: clickedDate,
+                endDate: clickedDate,
+                completed: false,
+                priority: 'none',
+                categoryId: defaultCategoryId,
+                projectId: defaultProjectId,
+                createdAt: new Date().toISOString(),
+                isQuickReminder: true,
+                notifiedTime: false,
+                notifiedCustomTime: false
+            };
+
+            const today = getLogicalDateString();
+            if (clickedDate && compareDateStrings(clickedDate, today) <= 0) {
+                reminder.notifiedTime = true;
             }
-        }
 
-        // 创建快速提醒对话框，传递默认项目ID和默认分类ID
-        const quickDialog = new QuickReminderDialog(clickedDate, clickedTime, async () => {
-            // 刷新日历事件
+            reminderData[reminderId] = reminder;
+            await writeReminderData(reminderData);
+
+            showMessage(t("reminderSaved") || "提醒已创建");
+            window.dispatchEvent(new CustomEvent('reminderUpdated', { detail: { source: 'calendar' } }));
             await this.refreshEvents();
-        }, undefined, {
-            defaultProjectId: (!this.currentProjectFilter.has('all') && !this.currentProjectFilter.has('none') && this.currentProjectFilter.size === 1) ? Array.from(this.currentProjectFilter)[0] : undefined,
-            defaultCategoryId: (!this.currentCategoryFilter.has('all') && !this.currentCategoryFilter.has('none') && this.currentCategoryFilter.size === 1) ? Array.from(this.currentCategoryFilter)[0] : undefined,
-            plugin: this.plugin // 传入plugin实例
-        });
-
-        quickDialog.show();
+        } catch (error) {
+            console.error('创建快速提醒失败:', error);
+            showMessage(t("saveReminderFailed") || "创建提醒失败");
+        }
     }
 
     /**
@@ -5323,6 +5453,35 @@ export class CalendarView {
     }
 
     /**
+     * 创建文档并绑定提醒（用于双击未绑定日程）
+     */
+    private async createDocumentAndBind(calendarEvent: any) {
+        try {
+            const settings = await this.plugin.loadSettings();
+            const notebook = settings.newDocNotebook;
+            const pathTemplate = settings.newDocPath || '/{{now | date "2006/200601"}}/';
+
+            if (!notebook) {
+                showMessage(t("pleaseConfigureNotebook"));
+                return;
+            }
+
+            const basePath = pathTemplate.endsWith('/') ? pathTemplate : `${pathTemplate}/`;
+            const title = calendarEvent.title || t("unnamedNote");
+            const renderedPath = await renderSprig(`${basePath}${title}`);
+
+            const docId = await createDocWithMd(notebook, renderedPath, '');
+            await refreshSql();
+            await this.bindReminderToBlock(calendarEvent, docId);
+            await this.refreshEvents();
+            showMessage(t("reminderBoundToBlock"));
+        } catch (error) {
+            console.error('创建文档并绑定提醒失败:', error);
+            showMessage(t("bindToBlockFailed"));
+        }
+    }
+
+    /**
      * 显示绑定到块的对话框
      */
     private showBindToBlockDialog(calendarEvent: any) {
@@ -5874,5 +6033,3 @@ export class CalendarView {
         }
     }
 }
-
-
