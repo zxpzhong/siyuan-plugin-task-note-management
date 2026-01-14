@@ -3890,6 +3890,10 @@ export class CalendarView {
     }
 
     private handleDateSelect(selectInfo) {
+        if (!selectInfo?.jsEvent || selectInfo.jsEvent.detail !== 2) {
+            this.calendar.unselect();
+            return;
+        }
         // 强制隐藏提示框，防止在创建新提醒时它仍然可见
         this.forceHideTooltip();
         // 处理拖拽选择时间段创建事项
