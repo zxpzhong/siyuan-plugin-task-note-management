@@ -44,11 +44,12 @@ export class CalendarView {
     private hideTooltipTimeout: number | null = null; // 添加提示框隐藏超时控制
     private tooltipShowTimeout: number | null = null; // 添加提示框显示延迟控制
     private lastClickTime: number = 0; // 添加双击检测
-    private clickTimeout: number | null = null; // 添加单击延迟超时
+    private lastClickDate: string | null = null;
     private lastEventClickTime: number = 0; // 日程双击检测
     private eventClickTimeout: number | null = null; // 日程单击延迟超时
     private refreshTimeout: number | null = null; // 添加刷新防抖超时
     private currentCompletionFilter: string = 'all'; // 当前完成状态过滤
+    private dayGridClickHandler: ((event: MouseEvent) => void) | null = null;
 
     // 性能优化：颜色缓存
     private colorCache: Map<string, { backgroundColor: string; borderColor: string }> = new Map();
@@ -831,6 +832,11 @@ export class CalendarView {
 
         this.calendar.render();
 
+        this.dayGridClickHandler = (event: MouseEvent) => {
+            this.handleDayGridDateClick(event);
+        };
+        calendarEl.addEventListener('click', this.dayGridClickHandler, true);
+
         // 支持从提醒面板将任务拖拽到日历上以调整任务时间
         // 接受 mime-type: 'application/x-reminder' (JSON) 或纯文本 reminder id
         calendarEl.addEventListener('dragover', (e: DragEvent) => {
@@ -1415,6 +1421,10 @@ export class CalendarView {
                 this.resizeObserver.disconnect();
             }
             mutationObserver.disconnect();
+            if (this.dayGridClickHandler) {
+                calendarEl.removeEventListener('click', this.dayGridClickHandler, true);
+                this.dayGridClickHandler = null;
+            }
             if (this.resizeTimeout) {
                 clearTimeout(this.resizeTimeout);
             }
@@ -1459,6 +1469,27 @@ export class CalendarView {
         const isDisplayed = style.display !== 'none' && style.visibility !== 'hidden';
 
         return isVisible && isDisplayed;
+    }
+
+    private isFloatLayerEnabled(): boolean {
+        const config = (window as any)?.siyuan?.config;
+        const editorConfig = config?.editor || {};
+        const uiConfig = config?.ui || {};
+
+        const candidates = [
+            editorConfig.floatWindow,
+            editorConfig.floatLayer,
+            editorConfig.hoverFloatWindow,
+            editorConfig.hoverPreview,
+            editorConfig.hoverLink,
+            uiConfig.floatWindow,
+            uiConfig.floatLayer,
+            uiConfig.hoverWindow,
+            uiConfig.popover
+        ];
+
+        const flag = candidates.find((value) => typeof value === 'boolean') as boolean | undefined;
+        return flag ?? true;
     }
 
     private handleEventMouseEnter(event: MouseEvent, calendarEvent: any) {
@@ -2166,31 +2197,34 @@ export class CalendarView {
             textSpan.style.boxSizing = 'border-box';
             textSpan.style.paddingBottom = '2px';
             textSpan.style.borderBottom = `2px dashed ${textColor}`;
-            textSpan.style.cursor = 'pointer';
+            const floatLayerEnabled = this.isFloatLayerEnabled();
+            textSpan.style.cursor = floatLayerEnabled ? 'pointer' : 'default';
             textSpan.title = '已绑定块';
 
-            let hoverTimeout: number | null = null;
+            if (floatLayerEnabled && this.plugin?.addFloatLayer) {
+                let hoverTimeout: number | null = null;
 
-            // 添加悬浮事件显示块引弹窗（延迟500ms）
-            textSpan.addEventListener('mouseenter', () => {
-                hoverTimeout = window.setTimeout(() => {
-                    const rect = textSpan.getBoundingClientRect();
-                    this.plugin.addFloatLayer({
-                        refDefs: [{ refID: props.blockId, defIDs: [] }],
-                        x: rect.left,
-                        y: rect.top - 70,
-                        isBacklink: false
-                    });
-                }, 500);
-            });
+                // 添加悬浮事件显示块引弹窗（延迟500ms）
+                textSpan.addEventListener('mouseenter', () => {
+                    hoverTimeout = window.setTimeout(() => {
+                        const rect = textSpan.getBoundingClientRect();
+                        this.plugin.addFloatLayer({
+                            refDefs: [{ refID: props.blockId, defIDs: [] }],
+                            x: rect.left,
+                            y: rect.top - 70,
+                            isBacklink: false
+                        });
+                    }, 500);
+                });
 
-            // 鼠标离开时清除延迟
-            textSpan.addEventListener('mouseleave', () => {
-                if (hoverTimeout !== null) {
-                    window.clearTimeout(hoverTimeout);
-                    hoverTimeout = null;
-                }
-            });
+                // 鼠标离开时清除延迟
+                textSpan.addEventListener('mouseleave', () => {
+                    if (hoverTimeout !== null) {
+                        window.clearTimeout(hoverTimeout);
+                        hoverTimeout = null;
+                    }
+                });
+            }
 
             titleEl.appendChild(textSpan);
         } else {
@@ -3758,35 +3792,45 @@ export class CalendarView {
     }
 
     private handleDateClick(info) {
-        // 实现双击检测逻辑
-        const currentTime = Date.now();
-        const timeDiff = currentTime - this.lastClickTime;
-
-        // 清除之前的单击超时
-        if (this.clickTimeout) {
-            clearTimeout(this.clickTimeout);
-            this.clickTimeout = null;
-        }
-
-        // 如果两次点击间隔小于500ms，认为是双击
-        if (timeDiff < 500) {
-            // 双击事件 - 创建快速提醒
-            this.createQuickReminder(info);
-            this.lastClickTime = 0; // 重置点击时间
-        } else {
-            // 单击事件 - 设置延迟，如果在延迟期间没有第二次点击，则不执行任何操作
-            this.lastClickTime = currentTime;
-            this.clickTimeout = window.setTimeout(() => {
-                // 单击事件不执行任何操作（原来是创建快速提醒，现在改为双击才创建）
-                this.lastClickTime = 0;
-                this.clickTimeout = null;
-            }, 500);
-        }
+        const clickedDate = info.date ? getLocalDateTime(info.date).dateStr : info.dateStr;
+        this.handleDateCreate(clickedDate);
     }
 
-    private async createQuickReminder(info) {
-        const clickedDate = info.date ? getLocalDateTime(info.date).dateStr : info.dateStr;
-        await this.createReminderForDate(clickedDate);
+    private handleDateCreate(clickedDate: string) {
+        const currentTime = Date.now();
+
+        // 避免双击导致连续创建两条任务
+        if (this.lastClickDate === clickedDate && currentTime - this.lastClickTime < 350) {
+            this.lastClickTime = currentTime;
+            return;
+        }
+
+        this.lastClickTime = currentTime;
+        this.lastClickDate = clickedDate;
+        this.forceHideTooltip();
+        void this.createReminderForDate(clickedDate);
+    }
+
+    private handleDayGridDateClick(event: MouseEvent) {
+        const viewType = this.calendar?.view?.type || '';
+        if (!viewType.includes('dayGrid') && !viewType.includes('multiMonth')) {
+            return;
+        }
+
+        const target = event.target as HTMLElement | null;
+        if (!target) return;
+
+        if (target.closest('.fc-event') || target.closest('.fc-more-link') || target.closest('.fc-daygrid-event')) {
+            return;
+        }
+
+        const dateCell = target.closest('[data-date]') as HTMLElement | null;
+        if (!dateCell) return;
+
+        const dateStr = dateCell.getAttribute('data-date');
+        if (!dateStr) return;
+
+        this.handleDateCreate(dateStr);
     }
 
     private async createReminderForDate(clickedDate: string) {
@@ -5017,12 +5061,6 @@ export class CalendarView {
         if (this.hideTooltipTimeout) {
             clearTimeout(this.hideTooltipTimeout);
             this.hideTooltipTimeout = null;
-        }
-
-        // 清理双击检测超时
-        if (this.clickTimeout) {
-            clearTimeout(this.clickTimeout);
-            this.clickTimeout = null;
         }
 
         // 清理刷新防抖超时
