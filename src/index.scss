@@ -2289,6 +2289,6 @@
     background-color: var(--b3-list-hover) !important;
 }
 
-.fc-daygrid-body {
-    max-height: 150px !important;
+.fc-timegrid .fc-daygrid-body {
+    max-height: 150px;
 }
