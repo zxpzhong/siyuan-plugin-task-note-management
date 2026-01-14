@@ -271,12 +271,13 @@ export class CalendarView {
 
                 // Determine the new view mode based on current view mode and new view type
                 let newViewMode: string;
-
                 // Extract the time period from current view mode (year, month, week, day)
                 if (currentViewMode === 'multiMonthYear') {
                     // 对于年视图，按选中的 viewType 决定是保留 timeline/kanban 还是切换为 listYear
                     if (selectedViewType === 'list') {
                         newViewMode = 'listYear';
+                    } else if (selectedViewType === 'kanban') {
+                        newViewMode = 'dayGridWeek';
                     } else {
                         newViewMode = 'multiMonthYear';
                     }
@@ -284,6 +285,8 @@ export class CalendarView {
                     // 对于月视图，按选中的 viewType 决定是保留 dayGridMonth 还是切换为 listMonth
                     if (selectedViewType === 'list') {
                         newViewMode = 'listMonth';
+                    } else if (selectedViewType === 'kanban') {
+                        newViewMode = 'dayGridWeek';
                     } else {
                         newViewMode = 'dayGridMonth';
                     }
@@ -318,6 +321,8 @@ export class CalendarView {
                     // List month view
                     if (selectedViewType === 'list') {
                         newViewMode = 'listMonth';
+                    } else if (selectedViewType === 'kanban') {
+                        newViewMode = 'dayGridWeek';
                     } else {
                         newViewMode = 'dayGridMonth';
                     }
@@ -325,6 +330,8 @@ export class CalendarView {
                     // List year view
                     if (selectedViewType === 'list') {
                         newViewMode = 'listYear';
+                    } else if (selectedViewType === 'kanban') {
+                        newViewMode = 'dayGridWeek';
                     } else {
                         newViewMode = 'multiMonthYear';
                     }
@@ -2170,7 +2177,7 @@ export class CalendarView {
             textSpan.title = '已绑定块';
 
             let hoverTimeout: number | null = null;
-            const floatLayerEnabled = window.siyuan?.config?.editor?.hoverPreview !== false;
+            const floatLayerEnabled = this.isFloatLayerEnabled();
 
             // 添加悬浮事件显示块引弹窗（延迟500ms）
             if (floatLayerEnabled) {
@@ -3788,53 +3795,32 @@ export class CalendarView {
     }
 
     private async createQuickReminder(info) {
-        const clickedDate = info.date ? getLocalDateTime(info.date).dateStr : info.dateStr;
-        await this.createReminderForDate(clickedDate);
-    }
+        if (!info) return;
+        const localDateTime = info.date ? getLocalDateTime(info.date) : null;
+        const clickedDate = localDateTime?.dateStr || info.dateStr;
+        const clickedTime = info.allDay ? null : localDateTime?.timeStr;
+        const defaultProjectId = (!this.currentProjectFilter.has('all') && !this.currentProjectFilter.has('none') && this.currentProjectFilter.size === 1)
+            ? Array.from(this.currentProjectFilter)[0]
+            : undefined;
+        const defaultCategoryId = (!this.currentCategoryFilter.has('all') && !this.currentCategoryFilter.has('none') && this.currentCategoryFilter.size === 1)
+            ? Array.from(this.currentCategoryFilter)[0]
+            : undefined;
 
-    private async createReminderForDate(clickedDate: string) {
-        try {
-            const reminderData = await getAllReminders(this.plugin);
-            const reminderId = `quick_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-            const defaultProjectId = (!this.currentProjectFilter.has('all') && !this.currentProjectFilter.has('none') && this.currentProjectFilter.size === 1)
-                ? Array.from(this.currentProjectFilter)[0]
-                : undefined;
-            const defaultCategoryId = (!this.currentCategoryFilter.has('all') && !this.currentCategoryFilter.has('none') && this.currentCategoryFilter.size === 1)
-                ? Array.from(this.currentCategoryFilter)[0]
-                : undefined;
-
-            const reminder: any = {
-                id: reminderId,
-                blockId: null,
-                docId: null,
-                title: t("newTask") || "新建任务",
-                date: clickedDate,
-                endDate: clickedDate,
-                completed: false,
-                priority: 'none',
-                categoryId: defaultCategoryId,
-                projectId: defaultProjectId,
-                createdAt: new Date().toISOString(),
-                isQuickReminder: true,
-                notifiedTime: false,
-                notifiedCustomTime: false
-            };
-
-            const today = getLogicalDateString();
-            if (clickedDate && compareDateStrings(clickedDate, today) <= 0) {
-                reminder.notifiedTime = true;
+        const quickDialog = new QuickReminderDialog(
+            clickedDate,
+            clickedTime || undefined,
+            async () => {
+                await this.refreshEvents();
+            },
+            undefined,
+            {
+                defaultProjectId,
+                defaultCategoryId,
+                plugin: this.plugin
             }
+        );
 
-            reminderData[reminderId] = reminder;
-            await saveReminders(this.plugin, reminderData);
-
-            showMessage(t("reminderSaved") || "提醒已创建");
-            window.dispatchEvent(new CustomEvent('reminderUpdated', { detail: { source: 'calendar' } }));
-            await this.refreshEvents();
-        } catch (error) {
-            console.error('创建快速提醒失败:', error);
-            showMessage(t("saveReminderFailed") || "创建提醒失败");
-        }
+        quickDialog.show();
     }
 
     /**
@@ -3957,6 +3943,23 @@ export class CalendarView {
 
         // 清除选择
         this.calendar.unselect();
+    }
+
+    private isFloatLayerEnabled(): boolean {
+        const editorConfig = window.siyuan?.config?.editor as any;
+        if (!editorConfig) return true;
+        if (editorConfig.hoverPreview === false) return false;
+
+        const floatWindowSetting = editorConfig.floatWindow ?? editorConfig.floatWindowMode ?? editorConfig.floatWindowTrigger;
+        if (floatWindowSetting === false || floatWindowSetting === 0) return false;
+        if (typeof floatWindowSetting === 'string') {
+            const normalized = floatWindowSetting.toLowerCase();
+            if (['none', 'off', 'disable', 'disabled', 'false'].includes(normalized)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private async refreshEvents() {

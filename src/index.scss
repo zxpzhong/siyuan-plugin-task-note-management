@@ -1176,6 +1176,16 @@
     white-space: nowrap;
 }
 
+/* 避免当前日期所在行被撑高，保持日历行高度一致 */
+.fc-daygrid-body .fc-daygrid-day {
+    height: 1px;
+}
+
+.fc-daygrid-body .fc-daygrid-day-frame {
+    min-height: 0;
+    height: 100%;
+}
+
 // 提醒事件样式
 .reminder-calendar-event-wrapper {
     display: flex;
