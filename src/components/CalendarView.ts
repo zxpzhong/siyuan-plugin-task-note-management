@@ -2170,27 +2170,30 @@ export class CalendarView {
             textSpan.title = '已绑定块';
 
             let hoverTimeout: number | null = null;
+            const floatLayerEnabled = window.siyuan?.config?.editor?.hoverPreview !== false;
 
             // 添加悬浮事件显示块引弹窗（延迟500ms）
-            textSpan.addEventListener('mouseenter', () => {
-                hoverTimeout = window.setTimeout(() => {
-                    const rect = textSpan.getBoundingClientRect();
-                    this.plugin.addFloatLayer({
-                        refDefs: [{ refID: props.blockId, defIDs: [] }],
-                        x: rect.left,
-                        y: rect.top - 70,
-                        isBacklink: false
-                    });
-                }, 500);
-            });
+            if (floatLayerEnabled) {
+                textSpan.addEventListener('mouseenter', () => {
+                    hoverTimeout = window.setTimeout(() => {
+                        const rect = textSpan.getBoundingClientRect();
+                        this.plugin.addFloatLayer({
+                            refDefs: [{ refID: props.blockId, defIDs: [] }],
+                            x: rect.left,
+                            y: rect.top - 70,
+                            isBacklink: false
+                        });
+                    }, 500);
+                });
 
-            // 鼠标离开时清除延迟
-            textSpan.addEventListener('mouseleave', () => {
-                if (hoverTimeout !== null) {
-                    window.clearTimeout(hoverTimeout);
-                    hoverTimeout = null;
-                }
-            });
+                // 鼠标离开时清除延迟
+                textSpan.addEventListener('mouseleave', () => {
+                    if (hoverTimeout !== null) {
+                        window.clearTimeout(hoverTimeout);
+                        hoverTimeout = null;
+                    }
+                });
+            }
 
             titleEl.appendChild(textSpan);
         } else {
