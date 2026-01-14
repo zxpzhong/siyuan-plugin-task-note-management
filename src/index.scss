@@ -1196,8 +1196,8 @@
     overflow: hidden;
 }
 
-/* 日历 all-day 区域样式 */
-.fc-daygrid-body {
+/* 日历 all-day 区域样式（仅限时间视图，避免影响月视图点击区域） */
+.fc-timegrid .fc-daygrid-body {
     max-height: 150px;
 }
 

@@ -526,6 +526,47 @@ export async function openBlock(blockId: string) {
     }
 }
 
+export async function openBlockInSplit(blockId: string, position: "right" | "bottom" = "right") {
+    // 检测块是否存在
+    const block = await getBlockByID(blockId);
+    if (!block) {
+        throw new Error('块不存在');
+    }
+    // 判断是否是移动端
+    const isMobile = getFrontend().endsWith('mobile');
+    if (isMobile) {
+        // 如果是mobile，直接打开块
+        openMobileFileById(window.siyuan.ws.app, blockId);
+        return;
+    }
+    // 判断块的类型
+    const isDoc = block.type === 'd';
+    if (isDoc) {
+        await openTab({
+            app: window.siyuan.ws.app,
+            doc: {
+                id: blockId,
+                action: ["cb-get-focus", "cb-get-scroll"]
+            },
+            position,
+            keepCursor: false,
+            removeCurrentTab: false
+        });
+    } else {
+        await openTab({
+            app: window.siyuan.ws.app,
+            doc: {
+                id: blockId,
+                action: ["cb-get-focus", "cb-get-context", "cb-get-hl"]
+            },
+            position,
+            keepCursor: false,
+            removeCurrentTab: false
+        });
+
+    }
+}
+
 // **************************************** Template ****************************************
 
 export async function render(id: DocumentId, path: string): Promise<IResGetTemplates> {
@@ -1213,4 +1254,3 @@ export async function uploadCloud(paths?: string[], silent: boolean = false): Pr
         return null;
     }
 }
-

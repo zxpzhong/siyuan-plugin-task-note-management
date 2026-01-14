@@ -5,7 +5,7 @@ import multiMonthPlugin from '@fullcalendar/multimonth';
 import listPlugin from '@fullcalendar/list';
 import interactionPlugin from '@fullcalendar/interaction';
 import { showMessage, confirm, openTab, Menu, Dialog } from "siyuan";
-import { refreshSql, getBlockByID, sql, updateBlock, getBlockKramdown, updateBlockReminderBookmark, openBlock, readProjectData, readReminderData, writeReminderData, createDocWithMd, renderSprig } from "../api";
+import { refreshSql, getBlockByID, sql, updateBlock, getBlockKramdown, updateBlockReminderBookmark, openBlockInSplit, readProjectData, readReminderData, writeReminderData, createDocWithMd, renderSprig } from "../api";
 import { getLocalDateString, getLocalDateTime, getLocalDateTimeString, compareDateStrings, getLogicalDateString, getRelativeDateString } from "../utils/dateUtils";
 import { QuickReminderDialog } from "./QuickReminderDialog";
 import { CategoryManager, Category } from "../utils/categoryManager";
@@ -2604,7 +2604,7 @@ export class CalendarView {
         }
 
         try {
-            openBlock(blockId);
+            await openBlockInSplit(blockId, "right");
         } catch (error) {
             console.error('打开笔记失败:', error);
 
@@ -3116,6 +3116,15 @@ export class CalendarView {
                 ...instanceModification
             });
 
+            if (info.event && typeof info.event.setExtendedProps === 'function') {
+                info.event.setExtendedProps({
+                    date: instanceModification.date,
+                    endDate: instanceModification.endDate || null,
+                    time: instanceModification.time || null,
+                    endTime: instanceModification.endTime || null
+                });
+            }
+
             showMessage(t("instanceTimeUpdated"));
             window.dispatchEvent(new CustomEvent('reminderUpdated', { detail: { source: 'calendar' } }));
 
@@ -3250,6 +3259,16 @@ export class CalendarView {
                 }
 
                 await saveReminders(this.plugin, reminderData);
+
+                if (info.event && typeof info.event.setExtendedProps === 'function') {
+                    const updated = reminderData[reminderId];
+                    info.event.setExtendedProps({
+                        date: updated.date,
+                        endDate: updated.endDate || null,
+                        time: updated.time || null,
+                        endTime: updated.endTime || null
+                    });
+                }
 
                 showMessage(t("eventTimeUpdated"));
             } else {
@@ -3945,19 +3964,20 @@ export class CalendarView {
                 // 先获取新的事件数据
                 const events = await this.getEvents();
 
-                // 清除所有现有事件和事件源
-                this.calendar.removeAllEvents();
-                this.calendar.removeAllEventSources();
+                this.calendar.batchRendering(() => {
+                    // 清除所有现有事件和事件源
+                    this.calendar.removeAllEvents();
+                    this.calendar.removeAllEventSources();
 
-                // 批量添加事件（比逐个添加更高效）
-                if (events.length > 0) {
-                    this.calendar.addEventSource(events);
-                }
+                    // 批量添加事件（比逐个添加更高效）
+                    if (events.length > 0) {
+                        this.calendar.addEventSource(events);
+                    }
+                });
 
-                // 强制重新渲染日历并更新大小
+                // 强制更新日历大小，避免频繁全量重渲染
                 if (this.isCalendarVisible()) {
                     this.calendar.updateSize();
-                    this.calendar.render();
                 }
             } catch (error) {
                 console.error('刷新事件失败:', error);
